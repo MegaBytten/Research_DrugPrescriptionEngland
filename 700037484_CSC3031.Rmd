@@ -1,0 +1,1039 @@
+---
+title: "The Effect of Socioeconomic Status on the Prescription of Drugs in English Regions"
+author: "700037484"
+output:
+  pdf_document:
+    includes:
+        in_header: "preamble.tex"
+bibliography: "references.bib"
+---
+
+```{r global-options, include=FALSE}
+knitr::opts_chunk$set(
+  echo=FALSE,
+  warning=FALSE,
+  message=FALSE
+)
+
+
+### PLEASE NOTE:
+#> two datsets could not be included in the turnitin-zip upload of this document due to file size!
+#> Therefore I have included the two additionally required datasets and their download links in a datasets.txt file
+#> Please download those and ensure they are in this local folder as well.
+
+# Fast doc register once env init:
+# rmarkdown::render("your_doc.Rmd")
+```
+
+``` {r init}
+library(tidyverse) # streamlining code
+library(readxl) # used to read data in from excel
+library(fuzzyjoin) # Required for optimised RegEx-based conditional left joins
+library(kableExtra) # beautiful tables
+#> If kableExtra throwing errors due to svglite:
+#>  - devtools::install_version("svglite", version = "1.2.3", repos = "http://cran.us.r-project.org")
+library(broom) # used in cleaning/prepping for plots
+library(broom.mixed) # required for summs plotting
+library(huxtable) # Used for exporting nice HTML tables
+library(jtools) # used to plot Poisson regression later
+library(equatiomatic) # remotes::install_github("datalorax/equatiomatic") --> Used for extracting LM equations
+```
+
+``` {r filepath configuration}
+#> For TJ! run the following line in order for the downloads to work:
+#>  - Assuming that you opened R project / R getwd() is local folder:
+filepath = ""
+
+#> For me! Because I have different file structure:
+# filepath = "project/"
+
+```
+
+``` {r Importing and cleaning GDP dataset}
+
+#> Import data - Not TIDY data
+gdp_data = read_excel(
+   path = paste0(filepath, "regionalgrossdomesticproductgdpallitlregions.xlsx"),
+  sheet = "Table 5",
+  range = "A2:AA238"
+)
+
+#> Iterate through column names and replace any " " SPACES with an "_" UNDERSCORE
+new_colnames = gsub(" ", "_", colnames(gdp_data))
+
+#> Rename columns of clean_df using new_colnames array
+colnames(gdp_data) = tolower(new_colnames)
+
+#> Create list of values to filter out of the dataset
+filter_list = c("TLZ", "UKX")
+
+#> Pull only rows where region code is 3 letters, so region-level data (not county-level granularity)
+gdp_data = gdp_data %>%
+  filter(
+    nchar(itl_code) == 3 & !(itl_code %in% filter_list)
+  ) %>%
+  select(!c(1,2)) # remove irrelevant first two ITL-related columns
+
+gdp_data = gdp_data %>%
+  pivot_longer(cols = !1, names_to = "year", values_to = "gdp") %>%
+  mutate(
+    region_name = tolower(region_name),
+    region_name = ifelse(region_name == "east", "east of england", region_name)
+  )
+
+#> Remove country-level data
+list_countries = c("england", "wales", "scotland", "northern ireland") # array of countries
+
+gdp_data = gdp_data %>%
+  filter(
+    !(region_name %in% list_countries),
+    year %in% c('2018', '2021')
+  )
+
+#> Free memory / clean env
+remove(filter_list, new_colnames, list_countries)
+```
+
+``` {r Importing population data}
+#> Reading in 2018 data
+pop2018_data = read_excel(
+  path = paste0(filepath, "ukmidyearestimates20182019ladcodes.xls"),
+  sheet = "MYE2-All",
+  range = "B5:D435"
+) %>% filter(Geography1 == "Region") %>%
+  select(!Geography1) %>%
+  rename("pop" = "All ages") %>%
+  mutate(
+    Name = tolower(Name),
+    Name = ifelse(Name == "east", "east of england", Name)
+  )
+
+#> Reading in 2021 data
+pop2021_data = read_excel(
+    path = paste0(filepath, "ukpopestimatesmid2021on2021geographyfinal.xls"),
+    sheet = "MYE2 - Persons",
+    range = "B8:D428"
+  ) %>%
+  filter(Geography == "Region") %>%
+  select(!Geography) %>%
+  rename("pop" = "All ages")  %>%
+  mutate(
+    Name = tolower(Name),
+    Name = ifelse(Name == "east", "east of england", Name)
+  )
+
+#> Loading 2018 pop data onto 2018 entries, and loading 2021 for 2021 data, then merging
+gdp_data = rbind(
+  gdp_data %>%
+    filter(year == 2018) %>%
+    left_join(pop2018_data, by = c("region_name" = "Name")),
+  gdp_data %>%
+    filter(year == 2021) %>%
+    left_join(pop2021_data, by = c("region_name" = "Name"))
+)
+
+#> Free memory / clean env
+remove(pop2018_data, pop2021_data)
+```
+
+``` {r Calculating GDP per capita}
+gdp_data = gdp_data %>%
+  mutate(gdp = gdp*1000000) %>%
+  mutate(gdp_per_capita = gdp / pop)
+```
+
+```{r generating GDP per capita rankings by year}
+#> Group by year, and then rank each region by income
+gdp_data = gdp_data %>%
+  group_by(year) %>%
+  mutate(gdp_per_capita_ranking = as.factor(rank(desc(gdp_per_capita)))) %>%
+  ungroup()
+
+#Plotting rankings
+graph_gdpranking = gdp_data %>% 
+  mutate(year = paste0("Dec. ", year)) %>%
+  mutate(
+    region_name = str_to_title(region_name),
+    region_name = factor(
+      region_name, levels = c(
+        "London", "South East", "East Of England", "North West", "South West",
+        "Yorkshire And The Humber", "West Midlands", "East Midlands", "North East"
+      )
+    ),
+  ) %>%
+  ggplot(
+       aes(x = year,
+           y = gdp_per_capita,
+           group = region_name,
+           color = region_name)) +
+  geom_line(size = 2,
+            alpha = 1) +
+  scale_color_brewer(palette = "Set1") +
+  labs(
+    x = "Year",
+    y = "GDP per capita (£)",
+    title = "GDP per capita rankings of English regions",
+    colour = "Regions"
+  )
+
+```
+
+``` {r Import English prescription data and Postcode-region lookup}
+#> As these datasets are VERY large (>10mill datapoints, +10GB):
+#>  - Datasets are of ALL prescriptions 
+#>  - May experience difficulties importing dataset
+#>  - Physical memory of machine is not a limitation
+#>  - Will likely need to increase virtual memory maximum of R Studio:
+#>    ~ Open terminal/CMD
+#>    ~ In home directory "echo 'R_MAX_VSIZE = 1000Gb' > .Renviron"
+#>    ~ "cat .Renviron"
+#>    ~ This increases maximum allocated memory to R in the R Environment variable configuration document
+#>    ~ Restart R
+#>    ~ R Console: Sys.getenv() and look for R_MAX_VSIZE = 1000Gb
+#>  - Import data! ~30 mins for 2018 data, ~22 mins for 2021 data using MacOS 8Gb RAM 2.2GHz 2CPU i7
+
+#> 2018 December EDP data, remove all practice and date info except for postcode
+edp2018_data = read_csv(
+  file = paste0(filepath, "epd_201812.csv")
+) %>%
+  select(-c(1:13)) %>%
+  mutate(
+    CHEMICAL_SUBSTANCE_BNF_DESCR = tolower(CHEMICAL_SUBSTANCE_BNF_DESCR)
+  )
+
+#> 2021 December EDP data, remove all practice and date info except for postcode
+edp2021_data = read_csv(
+  file = paste0(filepath, "epd_202112.csv")
+) %>%
+  select(-c(1:13)) %>%
+  mutate(
+    CHEMICAL_SUBSTANCE_BNF_DESCR = tolower(CHEMICAL_SUBSTANCE_BNF_DESCR)
+  )
+
+#> Load in ONS postcode lookup
+postcode_lookup_table = read_csv(
+  file = paste0(filepath, "National_Statistics_Postcode_Lookup_UK.csv")
+) 
+  
+#> Cleaning ONS Postcode lookup 
+new_colnames = gsub(" ", "_", colnames(postcode_lookup_table))
+colnames(postcode_lookup_table) = tolower(new_colnames)
+
+#>  - Select only relevant columns (Postcodes and region names)
+#>  - Select only english regions (as country-level data exists)
+#>  - Remove country_name column once completed
+postcode_lookup_table = postcode_lookup_table %>%
+  select(postcode_1, postcode_2, postcode_3, country_name, region_name) %>%
+  mutate(country_name = tolower(country_name))%>%
+  filter(country_name == "england") %>%
+  select(-country_name)
+
+#> Free memory / clean env
+remove(new_colnames)
+```
+
+``` {r Filtering datasets: Prescription drugs}
+#> Second HUGE computational load:
+#>  - Filtering 2018 + 2021 prescription dataset took me (see MacOS specs above): ~7 mins
+
+#> Filter datasets based on prescription data - only selecting relevant prescriptions based on drugs below
+druglist_mentalhealth = c(
+  "Sertraline",
+  "Beta blockers",
+  "Dosulepin",
+  "Duloxetine",
+  "Escitalopram",
+  "Lamotrigine",
+  "Mirtazapine",
+  "Paroxetine",
+  "Sodium valproate",
+  "Trazodone",
+  "Temazepam",
+  "Lithium",
+  "Fluoxetine",
+  "prozac"
+)
+
+druglist_hypertension = c(
+  "enalapril",
+  "lisinopril",
+  "perindopril",
+  "ramipril",
+  "candesartan",
+  "irbesartan",
+  "losartan",
+  "valsartan",
+  "olmesartan",
+  "amlodipine",
+  "felodipine",
+  "nifedipine",
+  "diltiazem",
+  "verapamil",
+  "indapamide",
+  "bendroflumethiazide",
+  "atenolol",
+  "bisoprolol",
+  "doxazosin",
+  "amiloride",
+  "spironolactone"
+)
+
+druglist_diabetes = c(
+  "Insulin",
+  "Semaglutide",
+  "Metformin",
+  "Sulphonylureas",
+  "Repaglinide and nateglinide ",
+  "Pioglitazone",
+  "Thiazolidine",
+  "Glitazones",
+  "OZempic",
+  "Trulicity",
+  "Byetta",
+  "Byureon",
+  "victoza",
+  "DPP-4 inhibitors ",
+  "Gliptins",
+  "SGLT2 inhibitors",
+  "Forxiga",
+  "Invokana",
+  "Jardiance",
+  "Steglatro"
+)
+
+druglist_painkillers = c(
+  "Paracetamol",
+  "Ibuprofen ",
+  "Co-codamol",
+  "Morphine",
+  "Oxycodone",
+  "Fentanyl",
+  "Ketamine"
+)
+
+druglist_antibiotics = c(
+  "Amoxicillin",
+  "Flucloxacillin",
+  "Meropenem",
+  "Vancomycin",
+  "Gentamycin",
+  "Clarithromycin",
+  "Co-amoxiclav",
+  "Doxycycline",
+  "Ceftazidime",
+  "Piperacillin",
+  "Tazobacta",
+  "tazocin",
+  "Ciprofloxacin",
+  "Levofloxacin",
+  "Cephalexin",
+  "Cefuroxime",
+  "Clindamycin",
+  "Trimethoprim",
+  "Nitrofurantoin"
+)
+
+druglist_antivirals = c(
+  "Acyclovi",
+  "Valacyclovir",
+  "Oseltamivir",
+  "Darunavir",
+  "Ganciclovir ",
+  "Ribavirin",
+  "Entecavir",
+  "Sofosbuvir",
+  "Famciclovir",
+  "Covid antivirals",
+  "Nirmatrelvir",
+  "Ritonavir",
+  "Remdesivir",
+  "molnupiravir"
+)
+
+druglists = list(
+  druglist_antivirals, druglist_antibiotics,
+  druglist_painkillers, druglist_diabetes,
+  druglist_hypertension,druglist_mentalhealth
+)
+
+#> ------------------------------------------------------------------------- <#
+#> Before running very compute-heavy comparisons to categorise prescriptions
+#> First clean edp2018 and edp2021 so that only relevant prescriptions are kept:
+#>  - Collapse the list of lists we have, and add flag to detect
+#>  - filter datasets
+#>  - then run comparisons in next stage
+
+#> Filter down 2018 prescription data by matching ANY of collapsed list of terms
+edp2018_data = edp2018_data %>%
+  filter(
+    str_detect(
+        CHEMICAL_SUBSTANCE_BNF_DESCR,
+        paste(tolower(unlist(druglists)), collapse = "|")
+      )
+  )
+
+#> Filter down 2021 prescription data by matching ANY of collapsed list of terms
+edp2021_data = edp2021_data %>%
+  filter(
+    str_detect(
+        CHEMICAL_SUBSTANCE_BNF_DESCR,
+        paste(tolower(unlist(druglists)), collapse = "|")
+      )
+  )
+```
+
+``` {r Correcting regions for EDP data}
+#> ------------------------------------------------------------------------- <#
+#> Before running very compute-heavy comparisons to categorise prescriptions
+#> Fist cleaning edp2018 and edp2021 to only incude data from 4 regions
+#> Theoretically should cut the dataset in half, allowing faster compute and similar analysis
+
+#> This section loads in a region lookup table 
+#> Region lookup table is used as the English Prescription Dataset used (EDP) doesnt abide by the same 9-region structure (2019) as the GDP dataset
+
+#> This is the big postcode matching algorithm:
+#>  - Lookup table has 3 styles of postcodes
+#>  - 3rd style is a combined style from 1 and 2, and encapsulates all of their post codes
+#>  - using 1st + 2nd = 3rd, only 56,684 dp lost
+edp2021_data = edp2021_data %>%
+  rename(postcode_3 = POSTCODE) %>%
+  left_join(
+    select(postcode_lookup_table, postcode_3, region_name),
+    by = "postcode_3"
+  ) %>%
+  mutate(region_name = tolower(region_name)) %>%
+  filter(!is.na(region_name))
+
+#> Repeat above same process for the 2018 english prescription dataset
+#>  - only 143,106 missing datapoints
+edp2018_data = edp2018_data %>%
+  rename(postcode_3 = POSTCODE) %>%
+  left_join(
+    select(postcode_lookup_table, postcode_3, region_name),
+    by = "postcode_3"
+  ) %>%
+  mutate(region_name = tolower(region_name)) %>%
+  filter(!is.na(region_name))
+
+#> Manual check: count of NA (missing) mapped regional postcodes (~5% loss is acceptable)
+#>  - Using 3 matching reduced data loss from ~8 million to 50,000 (~95% reduction in loss)
+#>  - Manually uncomment using Cmd (Ctrl) + Shift + C
+#>  - Use either 'edp2018_data' OR 'edp2021_data'
+#> ------------------------------------------------------------------------- <#
+# edp2018_data %>%
+#   filter(is.na(region_name)) %>%
+#   count()
+
+#> Free memory / clean env
+#>  - Can finally remove lookup table!
+remove(postcode_lookup_table)
+```
+
+``` {r Creating drug-specific dataframe}
+#> Now that dataframes have been reduced, we want to categorise prescriptions
+#> Iterating through ~3million entries and comparing against 6 lists of ~10 drugs = ~180 million comparisons
+#> To optimise this we will be creating a lookup table using our druglists, and using the optimised left_join()
+
+# Create data frame from all drug lists
+drug_lookup_table = rbind(
+  data.frame(drug = druglist_antibiotics, drug_category = "Antibiotics"),
+  data.frame(drug = druglist_antivirals , drug_category = "Antivirals"),
+  data.frame(drug = druglist_diabetes, drug_category = "Diabetes"),
+  data.frame(drug = druglist_hypertension, drug_category = "Hypertension"),
+  data.frame(drug = druglist_mentalhealth, drug_category = "Mental Health"),
+  data.frame(drug = druglist_painkillers, drug_category = "Painkillers")
+)
+
+#> ------------------------------------------------------------------------- <#
+#> This is where the left_join magic happens
+#> Using fuzzyjoin's regex_left_join instead of rowwise() mutations = reduction from ~75 mins per dataset to <2 minutes
+
+edp2018_data = edp2018_data %>%
+  regex_left_join(
+    drug_lookup_table,
+    by = c(CHEMICAL_SUBSTANCE_BNF_DESCR = "drug"),
+    ignore_case = TRUE
+  )
+
+edp2021_data = edp2021_data %>%
+  regex_left_join(
+    drug_lookup_table,
+    by = c(CHEMICAL_SUBSTANCE_BNF_DESCR = "drug"),
+    ignore_case = TRUE
+  )
+
+```
+
+``` {r Creating Supplementary table of drug composition per category}
+#> Count # total prescriptions PER drug category in both 2018 and 2021
+drugcategory_count_df = left_join(
+  edp2018_data %>%
+    filter(drug_category != "Antivirals") %>%
+    group_by(drug_category) %>%
+    summarise(prescriptions_per_category_2018 = n()),
+  edp2021_data %>%
+    filter(drug_category != "Antivirals") %>%
+    group_by(drug_category) %>%
+    summarise(prescriptions_per_category_2021 = n()),
+  by = 'drug_category'
+) %>%
+  mutate(prescriptions_per_category_total = prescriptions_per_category_2021 + prescriptions_per_category_2018)
+
+#> Count prescriptions per drugs
+drug_count_df = left_join(
+  edp2018_data %>%
+    filter(drug_category != "Antivirals") %>%
+    group_by(drug_category, drug) %>%
+    summarise(drug_count_2018 = n()),
+  edp2021_data %>%
+    filter(drug_category != "Antivirals") %>%
+    group_by(drug_category, drug) %>%
+    summarise(drug_count_2021 = n()),
+  by = c('drug', 'drug_category')
+) %>%
+  mutate(drug_count_total = drug_count_2018 + drug_count_2021)
+
+#> Left join total prescriptions onto drug prescriptions, calculate percentage per category
+drug_count_df = drug_count_df %>%
+  left_join(
+    drugcategory_count_df,
+    by = "drug_category"
+  ) %>%
+  mutate(
+    percent_prescriptions_2018 = round( (drug_count_2018 / prescriptions_per_category_2018) * 100, 2),
+    percent_prescriptions_2021 = round( (drug_count_2021 / prescriptions_per_category_2021) * 100, 2),
+    percent_prescriptions_total = round( (drug_count_total / prescriptions_per_category_total) * 100, 2)
+  ) %>%
+  select(
+    drug_category, drug, percent_prescriptions_2018, percent_prescriptions_2021, percent_prescriptions_total
+  )
+
+table_supplementarydrugcomposition = drug_count_df %>%
+  arrange(drug_category, -percent_prescriptions_total) %>%
+  mutate(drug_category = "") %>%
+  rename(
+    "Drug Category" = drug_category,
+    Drug = drug,
+    "% prescrpiptions (2018)" = percent_prescriptions_2018,
+    "% prescrpiptions (2021)" = percent_prescriptions_2021,
+    "% prescrpiptions (total)" = percent_prescriptions_total,
+  ) %>%
+  kable(
+    "latex", align = "c", longtable = T, booktabs = T
+  ) %>%
+  kable_styling(latex_options = c("repeat_header")) %>%
+  pack_rows("Antibiotics", 1, 17) %>%
+  pack_rows("Diabetes", 18, 21) %>%
+  pack_rows("Hypertension", 22, 42) %>%
+  pack_rows("Mental Health", 43, 54) %>%
+  pack_rows("Painkillers", 55, 61)
+
+```
+
+``` {r Cleaning environment from previous steps}
+#> Cleaning up! Our CPU and RAM will thank us
+remove(
+  drug_lookup_table, druglist_antibiotics, druglist_antivirals,
+  druglist_diabetes, druglist_hypertension, druglist_mentalhealth,
+  druglist_painkillers, druglists, drug_count_df, drugcategory_count_df
+)
+```
+
+``` {r Analysis: Drug prescriptions by category}
+#> Create combined dataframe of drug category frequency and GDP data
+
+categoryfrequencies = rbind(
+  edp2018_data %>%
+    group_by(region_name, drug_category) %>%
+    summarise(count = n()) %>%
+    arrange(region_name, desc(count)) %>% 
+    filter(drug_category != "Antivirals") %>%
+    mutate(year = 2018) %>%
+    left_join(
+      gdp_data%>%
+        filter(year == 2018)%>%
+        select(region_name, pop, gdp_per_capita, gdp_per_capita_ranking),
+      by = 'region_name'
+    ) %>%
+    mutate(
+      count_per_hundredthousand = (count / pop) * 100000
+    ),
+  edp2021_data %>%
+    group_by(region_name, drug_category) %>%
+    summarise(count = n()) %>%
+    arrange(region_name, desc(count)) %>% 
+    filter(drug_category != "Antivirals") %>%
+    mutate(year = 2021) %>%
+    left_join(
+      gdp_data%>%
+        filter(year == 2021)%>%
+        select(region_name, pop, gdp_per_capita, gdp_per_capita_ranking),
+      by = 'region_name'
+    ) %>%
+    mutate(
+      count_per_hundredthousand = (count / pop) * 100000
+    )
+)
+
+#> -------------------------------------------------------------------------- <#
+#>                      Getting N numbers for prescription count
+
+prescriptions_N_byregion = rbind(
+  edp2018_data %>%
+    group_by(region_name) %>%
+    summarise(region_prescription_count = n()) %>%
+    mutate(year = "2018"),
+ edp2021_data %>%
+    group_by(region_name) %>%
+    summarise(region_prescription_count = n()) %>%
+    mutate(year = "2021")
+) %>%
+  full_join(
+    gdp_data,
+    by=c("region_name", "year")
+  )%>%
+  mutate(
+    region_prescription_count_perhundredthousand = round((region_prescription_count / pop) * 100000), 1,
+    year = as.numeric(year)
+  ) %>%
+  select(
+    region_name, region_prescription_count,
+    region_prescription_count_perhundredthousand, year
+  ) %>%
+  arrange(year, -region_prescription_count_perhundredthousand)
+
+#> Add n prescription count to region_name for N numbers
+categoryfrequencies = left_join(
+  categoryfrequencies,
+  prescriptions_N_byregion,
+  by=c("region_name", "year")
+) %>%
+  mutate(
+    region_name = str_to_title(region_name),
+    fourAB_region = paste0(region_name, "\n (n=", region_prescription_count, ")"),
+    fourCD_region = paste0(region_name, "\n (n=", region_prescription_count_perhundredthousand, ")")
+  )
+  
+  
+  
+
+#> -------------------------------------------------------------------------- <#
+#>                            GRAPH SECTION
+
+
+#> Graph of pure drug category prescriptions
+graph_categoryprescriptions2018 = categoryfrequencies %>%
+  filter(year == 2018) %>%
+  mutate(year = paste0("Dec. ", year)) %>%
+  mutate(fourAB_region = factor(
+    fourAB_region,
+    levels = unique(.$fourAB_region[order(.$gdp_per_capita_ranking)])
+  )) %>%
+  ggplot( aes(x = drug_category, y = count, fill = drug_category) ) +
+  geom_bar(stat = "identity", position = "stack") +
+  labs(
+    x = "Drug Category",
+    y = "Prescriptions",
+    title = "2A. Drug prescriptions by region (Dec. 2018)",
+    fill = "Drug Category"
+  ) +
+  theme(axis.text.x = element_text(angle = 75, hjust = 1), legend.position = "right") +
+  facet_wrap(~fourAB_region) +
+  scale_fill_brewer(palette = "Set1")
+
+#> Same for 2021
+graph_categoryprescriptions2021 = categoryfrequencies %>%
+  filter(year == 2021) %>%
+  mutate(fourAB_region = factor(
+    fourAB_region,
+    levels = unique(.$fourAB_region[order(.$gdp_per_capita_ranking)])
+  )) %>%
+  ggplot( aes(x = drug_category, y = count, fill = drug_category) ) +
+  geom_bar(stat = "identity", position = "stack") +
+  labs(
+    x = "Drug Category",
+    y = "Prescriptions",
+    title = "2B. Drug prescriptions by region (Dec. 2021)",
+    fill = "Drug Category"
+  ) +
+  theme(axis.text.x = element_text(angle = 75, hjust = 1), legend.position = "right") +
+  facet_wrap(~fourAB_region) +
+  scale_fill_brewer(palette = "Set1")
+
+#> Graph of  drug category prescriptions relative to population (per hundred thousand residents)
+graph_categorycapitaprescriptions2018 = categoryfrequencies %>%
+  filter(year == 2018)%>%
+  mutate(fourCD_region = factor(
+    fourCD_region,
+    levels = unique(.$fourCD_region[order(.$gdp_per_capita_ranking)])
+  )) %>%
+  ggplot( aes(x = drug_category, y = count_per_hundredthousand, fill = drug_category) ) +
+  geom_bar(stat = "identity", position = "stack") +
+  labs(
+    x = "Drug Category",
+    y = "Prescriptions per 100,000",
+    title = "2C. Drug prescriptions by region per 100,000 residents (Dec. 2018)",
+    fill = "Drug Category"
+  ) +
+  theme(axis.text.x = element_text(angle = 75, hjust = 1), legend.position = "right") +
+  facet_wrap(~fourCD_region) +
+  scale_fill_brewer(palette = "Set1")
+
+#> Same for 2021
+graph_categorycapitaprescriptions2021 = categoryfrequencies %>%
+  filter(year == 2021)%>%
+  mutate(fourCD_region = factor(
+    fourCD_region,
+    levels = unique(.$fourCD_region[order(.$gdp_per_capita_ranking)])
+  )) %>%
+  ggplot( aes(x = drug_category, y = count_per_hundredthousand, fill = drug_category) ) +
+  geom_bar(stat = "identity", position = "stack") +
+  labs(
+    x = "Drug Category",
+    y = "Prescriptions per 100,000",
+    title = "2D. Drug prescriptions by region per 100,000 residents (Dec. 2021)",
+    fill = "Drug Category"
+  ) +
+  theme(axis.text.x = element_text(angle = 75, hjust = 1), legend.position = "right") +
+  facet_wrap(~fourCD_region) +
+  scale_fill_brewer(palette = "Set1")
+```
+
+``` {r Analysis: Top 5 drugs}
+#> ------------------------------------------------------------------------- <#
+#>                      Creating Dataframe Section
+
+top_drugs = rbind( # Rbind two smaller year-based dataframes into a general index
+  
+  # Create a dataframe of ALL drugs and their incidence count in the EDP dataset
+  edp2018_data %>%
+    group_by(region_name, drug_category, drug) %>%
+    summarise(drug_count = n()) %>%
+    arrange(region_name, drug_category, desc(drug_count)) %>%
+    slice_max(order_by = drug_count, n = 5) %>%
+    ungroup() %>%
+    
+    # The following section, removes drugs < 1000 prescriptions, and pulls top 5 drugs of every category
+    filter(drug_count > 1000) %>%
+    group_by(region_name, drug_category) %>%
+    slice_max(order_by = drug_count, n = 5) %>%
+    ungroup() %>%
+    mutate(year = 2018)%>%
+    
+    # Finally, we scale this value by pulling in population data, changing pure incidence into relative incidence (pre hundred thousand residents)
+    left_join(
+      gdp_data%>%
+        filter(year == 2018)%>%
+        select(region_name, pop, gdp_per_capita, gdp_per_capita_ranking),
+      by = 'region_name'
+    ) %>%
+    mutate(
+      count_per_hundredthousand = (drug_count / pop) * 100000
+    ),
+  
+  # This marks the creation of the second dataframe, doing exactly the same thing only with 2021 instead of 2018 data
+  edp2021_data %>%
+    group_by(region_name, drug_category, drug) %>%
+    summarise(drug_count = n()) %>%
+    arrange(region_name, drug_category, desc(drug_count)) %>%
+    slice_max(order_by = drug_count, n = 5) %>%
+    ungroup() %>%
+  
+    #Second half, removing <1000 and pulling top 5 per category
+    filter(drug_count > 1000) %>%
+    group_by(region_name, drug_category) %>%
+    slice_max(order_by = drug_count, n = 5) %>%
+    ungroup() %>%
+    mutate(year = 2021)%>%
+    
+    # Scaling by left joining populationd data, and calculating count per hundred thousand 
+    left_join(
+      gdp_data%>%
+        filter(year == 2021)%>%
+        select(region_name, pop, gdp_per_capita, gdp_per_capita_ranking),
+      by = 'region_name'
+    ) %>%
+    mutate(
+      count_per_hundredthousand = (drug_count / pop) * 100000
+    )
+)
+
+#> -------------------------------------------------------------------------- <#
+#>                      Getting N numbers for prescription count
+
+prescriptions_N_bycategory = rbind(
+  edp2018_data %>%
+    group_by(drug_category) %>%
+    summarise(drug_prescription_count = n()) %>%
+    mutate(year = 2018),
+ edp2021_data %>%
+    group_by(drug_category) %>%
+    summarise(drug_prescription_count = n()) %>%
+    mutate(year = 2021)
+)  %>%
+  filter(drug_category != "Antivirals")
+
+top_drugs = left_join(
+  top_drugs,
+  prescriptions_N_bycategory,
+  by=c("drug_category", "year")
+) %>%
+  mutate(drug_category_n = paste0(drug_category, "\n (n=", drug_prescription_count, ")"))
+  
+
+#> ------------------------------------------------------------------------- <#
+#>                              Graphing Section
+
+graph_topdrugs2018 = top_drugs %>%
+  filter(year == 2018) %>%
+  mutate(region_name = factor(
+    region_name,
+    levels = unique(.$region_name[order(.$gdp_per_capita_ranking)])
+  )) %>%
+  ggplot(
+    aes(x = reorder(drug, -count_per_hundredthousand), y = count_per_hundredthousand, fill = drug_category_n)
+  ) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(
+    x = "Drug",
+    y = "Prescriptions per 100,000",
+    title = "Top 5 Drug (>1000) Prescriptions per 100,000 Residents by Category and Region (Dec. 2018)",
+    fill = "Drug Category"
+  ) +
+  theme(
+    text = element_text(size=18),
+    axis.text.x = element_text(angle = 60, size=10, hjust = 1),
+    legend.text = element_text(size=18),
+    legend.spacing.y = unit(1, 'cm')
+  ) +
+  guides(fill = guide_legend(byrow = TRUE)) +
+  facet_wrap(~region_name, scales = "free_x") +
+  scale_fill_brewer(palette = "Set1")
+ 
+
+graph_topdrugs2021 = top_drugs %>%
+  filter(year == 2021) %>%
+  mutate(region_name = factor(
+    region_name,
+    levels = unique(.$region_name[order(.$gdp_per_capita_ranking)])
+  )) %>%
+  ggplot(
+    aes(x = reorder(drug, -count_per_hundredthousand), y = count_per_hundredthousand, fill = drug_category_n)
+  ) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(
+    x = "Drug",
+    y = "Prescriptions per 100,000",
+    title = "Top 5 Drug (>1000) Prescriptions per 100,000 Residents by Category and Region (Dec. 2021)",
+    fill = "Drug Category"
+  ) +
+  theme(
+    text = element_text(size=18),
+    axis.text.x = element_text(angle = 60, size=10, hjust = 1),
+    legend.text = element_text(size=18),
+    legend.spacing.y = unit(1, 'cm')
+  ) +
+  guides(fill = guide_legend(byrow = TRUE)) +
+  facet_wrap(~region_name, scales = "free_x") +
+  scale_fill_brewer(palette = "Set1")
+```
+
+``` {r Analysis: Logistic Regression for Association}
+#> Investigating Skew of the data for non-normality
+# hist(categoryfrequencies$count_per_hundredthousand)
+
+#> Scatterplot to visualise data and relationship
+graph_drugscatterplot = categoryfrequencies %>%
+  mutate(year = as.factor(year)) %>%
+  ggplot(aes(x = gdp_per_capita, y = count_per_hundredthousand, shape = year)) + 
+  geom_point(aes(group = region_name, colour = drug_category), size = 2.5) +
+  scale_colour_brewer(palette = "Set1") +
+  labs(
+    title = "Relative drug prescriptions by GDP and drug category",
+    x = "GDP per Capita",
+    y = "Drug Prescriptions per 100,000 Residents",
+    colour = "Drug Category"
+  ) 
+
+#> ------------------------------------------------------------------------ <#
+#>                      Multiple linear regression
+#> - Based on plots above, its clear that there is high variability in prescription and GDP by drug category
+#> - Therefore simple linear regression is too simple - we can factor drug category into model through multiple linear regression
+#> - Also reduced GDP by 1,000 so that variables would be in values of £1,000 gdp increase
+#> - LM function automatically turns multi-value (not binary) categorical data (drug_category) into multiple dummy variables
+
+model = lm(
+    data = categoryfrequencies %>%
+      mutate(gdp_per_capita = gdp_per_capita / 1000),
+    formula = count_per_hundredthousand ~ gdp_per_capita + drug_category
+  )
+
+#> Looking at linearity of the data the model was fit to
+#> Will not be included in final report so commented out:
+# plot(model)
+
+#> -------------------------------------------------------------------------- <#
+#>                Tabling, graphing and exporting coefficients
+#> 
+
+table_model = export_summs(
+  model,
+  confint = TRUE,
+  digits = 2,
+  model.names = c("Prescription coefficient multiplier"),
+  error_format = "[{conf.low}, {conf.high}]",
+  coefs = c(
+    "GDP per capita (£1,000)" = "gdp_per_capita",
+    "Diabetes drugs (relative to Antibiotics)" = "drug_categoryDiabetes",
+    "Hypertension drugs (relative to Antibiotics)" = "drug_categoryHypertension",
+    "Mental Health drugs (relative to Antibiotics)" = "drug_categoryMental Health",
+    "Painkillers (relative to Antibiotics)" = "drug_categoryPainkillers"
+  ),
+  model.info = FALSE
+)
+
+graph_model = plot_summs(
+    model,
+    error_format = "[{conf.low}, {conf.high}]",
+    coefs = c(
+    "GDP per capita (£1,000)" = "gdp_per_capita",
+    "Diabetes drugs (relative to Antibiotics)" = "drug_categoryDiabetes",
+    "Hypertension drugs (relative to Antibiotics)" = "drug_categoryHypertension",
+    "Mental Health drugs (relative to Antibiotics)" = "drug_categoryMental Health",
+    "Painkillers (relative to Antibiotics)" = "drug_categoryPainkillers"
+    )
+  ) +
+  labs(
+    x = "Prescription coefficient multiplier",
+  )
+```
+
+## Introduction
+
+One of the most notable phenomena of COVID-19 was the socioeconomic disparity of impact, providing further evidence for addressing healthcare inequality in the UK. Healthcare inequality by socioeconomic status (SES) has long been documented before COVID-19 with prominent research beginning in 1999. [@gunning-schepers_stronks_1999] Since it's initial introduction, SES/income has been classified as a determinant of health, directly correlated to life expectancy, quality of life, and disease risk. [@kivimäki_2020] Further research has built on this by identifying drug-specific or disease-specific relationships with SES, namely cardiovascular disease, kidney disease, diabetes, cancer, and more. (@schultz_2018, @dalstra_2005) 
+
+Although there have been macroscopic analyses done on SES and various common diseases, there has been little broad-spectrum research on SES and drug prescriptions. Currently, it is not fully understood how SES can impact the incidence or prescribing of different drugs. Therefore, this study aims to investigate the nine English regions for the effect of SES on the regional profile of antibiotic, diabetes, hypertension, mental health, or painkiller drug prescriptions. Furthermore, it also attempts to identify if any pre-existing socioeconomic inequalities in prescriptions were exacerbated after COVID, by comparing 2018 and 2021 data.
+
+## Methods
+
+### Data Sources
+
+Following the 2019 UK local authority restructuring, drug prescription data was compared between the 9 official UK regions: North East, North West, Yorkshire and the Humber, East Midlands, West Midlands, East of England, London, South East and the South West. Socioeconomic status of each region was determined through a proximal measure of Gross Domestic Product (GDP) per capita, indicating relative average income of region residents. Regional GDP data was taken from the 1998 to 2021 edition of the Regional Gross Domestic Product: Local Authorities dataset, published by the UK Office for National Statistics, filtering out all but the 2018 and 2021 data. GDP per capita was then calculated by importing regional population data from the Mid-2018 (2019 LA boundaries) and Mid-2021 editions of the Estimates of the population for the UK, England, Wales, Scotland and Northern Ireland dataset, also published by the Office for National Statistics.
+
+Prescription data was taken from the December 2018 and December 2021 editions of the English Prescribing Dataset (EPD), published by the NHSBSA. The EPD applies the Practice Detailed Prescribing Information data structuring guidance on an updated version of the Practice Level Prescribing dataset, intending to become the primary public practice-level prescription dataset in the future.
+
+The EPD dataset was formatted to categorise all prescriptions into the nine selected UK regions, using the EPD-native postcode data, and an external postcode lookup table from the December 7th version of the National Statistics Postcode Lookup UK dataset, published by Open Data Camden.
+
+\newpage
+
+### Variables and analysis
+
+In line with similar disease-specific SES studies, practice prescriptions were categorised into common disease categories, including: antibiotics, diabetes, hypertension, mental health and painkillers. Antivirals were also initially captured, but due to low numbers of observed prescriptions were ultimately removed. Prescriptions were captured using a custom matching algorithm, where string-based prescription descriptions were scanned against a custom lookup table of the most commonly prescribed drugs used in each disease category. For a full breakdown of captured drugs and corresponding categories, see Supplementary Table 1. Data was excluded if the prescription could not be classified into any of the five groups, or the nine English regions.
+
+All analysis was done using R version 2023.06.1+524. Descriptive analysis was done on 3 levels of the prescription data, comparing drugs by the nine English regions, comparing December 2018 to December 2021, and comparing drug categories. GDP per capita was seen to display significant right skew, but as this accurately represents the distribution of wealth in the UK, no further data was collected to investigate or correct this distribution. Drug category was seen to have a significant confounding effect on prescriptions, so a multiple linear regression using GDP per capita and drug category was developed to predict prescription count per 100,000 residents. Linearity was investigated, and due to the small sample size there was some leverage present by outlying data points, however data remained mostly linear. Although this regression model is unlikely to accurately explain the complex nature behind SES and prescription behaviour, it provides a novel insight into the unmapped relationship.
+
+## Results
+
+Of the 17,819,185 observations in the December 2018 EPD dataset, 3,875,575 were successfully categorised into the five drug categories and nine regions. Similarly, 3,808,443 prescriptions were captured in the December 2019 EPD dataset out of 17,678,769 observations. The vast majority of data loss was attributed to non-relevant prescriptions being filtered, as the 2018 EPD dataset only incurred 143,106 lost observations due to incorrect/missing regional categorisation, and 56,684 for 2021.
+
+Figure 1. GDP per capita tracked over 2018 and 2021 for the nine English regions
+\newline
+\newline
+``` {r Print: 1 GDP per capita rankings, fig.height=3}
+graph_gdpranking
+```
+
+The GDP per capita of regions seen in Figure 1 shows some heterogeneity, where some regions like London, the South East, and the North West show significant growth from 2018 to 2021, while other regions like the West Midlands and East show limited growth. Although growth differs between regions, the rankings of regions remain relatively unchanged, with the most prominent change coming from Yorkshire, marginally overtaking both East and West Midlands in GDP per capita. There is unequal spread of the GDP per capita data, as majority of the regions sit between ~£20,000 to ~£30,000, where London is the only region with a GDP per capita over £40,000, likely impacting the accuracy of later modelling.
+
+
+Figure 2. 4-part figure of the number of prescriptions by region, year and drug category.
+\newline
+``` {r Print: 2AB part prescription figure, out.width="50%", out.height="33%"}
+#> Graphs of drugs by region and category - not population adjusted
+graph_categoryprescriptions2018 
+graph_categoryprescriptions2021
+```
+\newline
+``` {r Print: 2CD part prescription figure, out.width="50%", out.height="33%"}
+#> Graphs of drugs by region and category PER 100,000 residents
+graph_categorycapitaprescriptions2018
+graph_categorycapitaprescriptions2021
+```
+
+The number of prescriptions in December 2018 and 2021 is compared by region and drug category in the 4-part plot Figure 2. Regions are ordered by GDP per capita, where the first plot (London) has the highest socioeconomic ranking, and the last plot (North East) has the lowest. As population is a confounder for number of prescriptions, Figure 2A and 2B show prescriptions unadjusted for population, while 2C and 2D adjust the number of prescriptions per 100,000 residents.
+
+All regions observed a decrease in total prescriptions from December 2018 to 2021, shown in Figure 2A and 2B. When population-adjusted in figures 2C and 2D, this decrease from 2018 to 2021 remains true with the single exception of the South West. Across all regions and both years, Hypertension drugs were the most frequently prescribed per 100,000 residents, followed by painkillers, and then closely thereafter by mental health drugs. Diabetes and antibiotics were the second least and least frequently prescribed drugs, respectively. Interestingly, the North West is an outlier in all 4 graphs, with disproportionately high unadjusted and population-adjusted prescriptions across categories.
+
+Antibiotics and diabetes prescriptions per 100,000 residents remains relatively constant between regions, regardless of SES in both December 2019 and 2021, seen in Figure 2C. The opposite is true for hypertension, painkiller, and mental health drugs which can be seen to increase as SES decreases in 2018. Furthermore, the total number of prescriptions per 100,000 residents (regional n numbers) increases as SES decreases in 2018, suggesting that there may be an inversely proportional relationship between SES and population-adjusted drug prescriptions. However, in December 2021 these relationships are less clear, as Hypertension, mental health and painkiller prescriptions cannot clearly be seen steadily increasing as SES decreases. Similarly, the inversely proportional relationship between socioeconomic status and population-adjusted prescription count is less clear in 2021. 
+
+\newpage
+Figure 3. A 2-part detailed breakdown of the 5 most commonly prescribed drugs with at least 1,000 prescriptions by region and category for December 2018 and 2021
+\newline
+\newline
+``` {r Print: 3A top 5 drugs 2018, fig.dim = c(16, 10)}
+graph_topdrugs2018
+```
+\newline
+``` {r Print: 3B top 5 drugs 2021, fig.dim = c(16, 10)}
+graph_topdrugs2021
+```
+\newpage
+
+The detailed drug category breakdown in Supplementary Table 1 shows that drug categories are heterogenous in their prescription distribution. Some categories like diabetes and painkillers have the majority of their total prescriptions composed from their few most prescribed drugs, while other categories such as antibiotics and hypertension drugs have prescriptions more evenly distributed amongst all drugs. This can be visualised in Figure 3, which shows the 5 most commonly prescribed drugs (with at least 1,000 prescriptions) per 100,000 residents.
+
+The most frequently prescribed drugs remain generally similar across regions, with painkillers such as Paracetamol and Co-codamol being among the most frequently prescribed, along with diabetes-categorised insulin and Metformin. The 5 most frequently prescribed hypertension and mental health drugs are commonly seen directly thereafter, followed by antibiotics. This pattern generally holds true across regions, however, at the extremes of SES (London and North East, highest and lowest respectively), prescriptions show deviation from the pattern. London shows elevated diabetes and hypertension prescriptions, with a noticeable decrease in painkiller prescriptions, particularly Morphine. Conversely, the North East has elevated hypertension, mental health, and painkiller prescriptions compared to its SES-similar regions. Interestingly, Morphine is seen to positively deviate in the North East, suggesting a potential inversely proportional relationship between Morphine and socioeconomic status - an area that has not yet been deeply researched.
+
+The data and prescription patterns remain relatively consistent comparing December 2018 to December 2021, except for two important differences. Firstly, mental health prescriptions can be seen to be elevated in London in 2021 relative to 2018. Secondly, the North East can be seen further deviating from the general prescription profiles, with fewer Co-codamol prescriptions and elevated hypertension prescriptions.
+
+\newpage
+
+### Linear Modelling
+
+Figure 4. Scatterplot visualising population-adjusted drug category prescription data by year and GDP per capita.
+\newline
+``` {r Print: 4 scatterplot visualisation}
+graph_drugscatterplot
+```
+
+In line with figures 2 and 3, Figure 4 visualises that drug categories are prescribed differently, regardless of GDP per capita of the region. Hypertension is consistently seen as the most frequently prescribed drug, followed by painkillers and mental health drugs, and finally by antibiotics and diabetes drugs. Since there is a clear confounding affect by drug category on prescriptions, this was factored into our model and a multiple linear model predicting drug prescriptions using GDP per capita of the region and drug category was created. Due to the confounding of population on prescription count, we used GDP per capita to automatically capture this relationship, and prevent intra-model coefficient confounding between population and GDP. 
+
+\newpage
+Table 1. Coefficients and values from the multiple linear model predicting drug prescriptions 
+``` {r Print: T1 model table}
+table_model
+```
+
+``` {r Print: model equation}
+extract_eq(model, wrap = TRUE, use_coefs = TRUE, terms_per_line = 1, coef_digits = 6)
+```
+
+The first coefficient in the equation which is not shown in the table is the intercept, indicating that a region with all other variables set to 0 (0 population, £0 GDP per capita, and an antibiotic drug) will prescribe ~1,012 antibiotics per 100,000 residents. As linear models function only with binary categorical variables, each drug category was converted into binary outcomes, and coefficients were generated relative to the baseline category, antibiotics. The GDP per capita coefficient is relative to £1,000 changes, meaning a £1,000 GDP per capita increase would result in ~6.8 less antibiotics prescribed per 100,000 residents. The diabetes coefficient has confidence intervals which cross 0, indicating that there is not enough evidence to evaluate if there will be more diabetes prescriptions than antibiotics per 100,000 residents. This is consistent with our previous findings, where antibiotics and diabetes were similarly prescribed across regions and years. The coefficients of the remaining three drug categories (hypertension, mental health, and painkillers) present significant P values, narrow confidence intervals and very high coefficients relative to antibiotics. These largely positive coefficients are consistent with previous findings, where prescriptions of any of these 3 drugs were found to be much higher than antibiotics, across regions and years. The correlation coefficient of the data to the multiple linear model can be seen presented at the end of Table 1 as well, indicating a very strong fit of $R^{2}$ = 0.90. All of the coefficients from Table 1 can visually be compared in the following Figure 5.
+
+\newpage
+Figure 5. Forest plot comparing coefficients from multiple linear model of GDP per capita, population, and drug category predicting prescription count
+\newline
+```{r Print: 5 model coefficients forest}
+graph_model
+```
+
+## Limitations
+
+Although the study provides some insight into the relationship between the prescription profile of various socioeconomic English regions, any relationship identified is purely observational. Furthermore, as only 2 months of prescription data were captured (2018 December and 2021 December), the observational relationships are subject to temporal resolution, as some drugs are affected by seasonal changes, and may not accurately represent year-round prescription patterns. Future studies should focus on incorporating more plentiful, high granularity data, such as authority or county level data, and should track prescriptions year-round to minimise temporal/spatial constraints. Once stronger observational relationships have been identified, causal research should attempt more sophisticated statistical analysis, such as instrumental variable analysis or mixed effects modelling, as both drug prescriptions and socioeconomic status are by nature, highly confounded variables.
+
+This study presented various other areas that can be improved upon in future research. Firstly, only about 18% of prescriptions were captured from the datasets. Implementing a more sophisticated capturing algorithm, either by increasing the number of key terms/drugs used, or by considering other drug categories/classifications, would greatly reduce data loss. Secondly, as antivirals were expected to have a large change from 2018 to 2021, finding an alternative dataset which can be incorporated into the analysis would greatly improve discussion and inter-drug comparisons. Furthermore, GDP per capita was used as a proxy measurement for socioeconomic status, however this is an unrefined definition, and much more complex rankings can be used such as pre-calculated deprivation indexes from the English Indices of Deprivation 2019 dataset published by GOV UK. Finally, only prescription data at practice-level was included through the selected datasets. Incorporating hospital or over-the-counter data has been done in similar studies, and could provide more accurate data on drug prescriptions within a region.
+
+## Conclusion
+
+Socioeconomic status, measured by-proxy through GDP per capita, was seen to have an inversely proportional relationship with population-adjusted prescription count of drugs. This was strongly observed in December 2018, and visible in 2021, across all 5 drug categories (antibiotics, diabetes, hypertension, mental health and painkillers). This relationship was then quantified with a multiple linear model, which showed strong correlation of the data, and confirmed a significantly inversely proportional relationship. Interestingly, hypertension drugs and painkillers were the most prescribed, while antibiotics and diabetes drugs were the least prescribed per 100,000 residents, across all regions and both years. Furthermore, some drug categories, like hypertension drugs, saw relatively even prescription between all captured drugs, while other categories like painkillers saw the majority of prescriptions from a few prominent drugs, like Paracetamol and Co-codamol. Most regions showed similar prescription profiles, with similar proportions of drug categories prescribed across both 2018 and 2021. However, the highest and lowest socioeconomic regions (London and North East, respectively) were shown to have the highest deviance from this standard prescription profile of other regions. Morphine was a particular drug of interest, as there was significantly elevated or reduced prescriptions in the highest and lowest socioeconomic regions, respectively. Finally, the North West had disproportionately high prescriptions, even when adjusted per 100,000 residents, and also slightly deviated from the prescription profile of most other regions. This study presents a novel insight into the relationship between socioeconomic status and drug prescriptions, however subsequent research is required involving more sophisticated statistical and confounder analyses in order to better understand the observational relationship. 
+
+
+\newpage
+## Supplementary
+Supplementary Table 1. Drug categories broken down by captured prescribed drugs, and their relative percentages by year
+\newline
+```{r Print: SUPP drug composition table}
+table_supplementarydrugcomposition
+```
+
+\newpage
+## References

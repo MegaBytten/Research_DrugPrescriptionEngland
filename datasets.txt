@@ -1,0 +1,23 @@
+Dataset 1:
+ - English Prescribing Dataset (December 2018)
+ - Available from: https://opendata.nhsbsa.net/dataset/english-prescribing-data-epd/resource/65967506-b5a9-4a53-a49b-7eb54d6b9fc2
+ 
+Dataset 2:
+ - English Prescribing Dataset (December 2021)
+ - Available from: https://opendata.nhsbsa.net/dataset/english-prescribing-data-epd/resource/5f30033f-ecfa-4b78-a0df-5bba0aa59954 
+
+Postcode Lookup Dataset:
+ - National Statistics Postcode Lookup (May 2022) for the UK
+ - Published by Office of National Statistics
+ - Available from: https://geoportal.statistics.gov.uk/datasets/9ac0331178b0435e839f62f41cc61c16/about
+
+GDP Data: 
+ - Regional gross domestic product: local authorities
+ - Published by Office of National Statistics
+ - Extracted years 2018 and 2021
+ - Available from: https://www.ons.gov.uk/economy/grossdomesticproductgdp/datasets/regionalgrossdomesticproductlocalauthorities
+
+Population estimates:
+ - Estimates of the population for England and Wales
+ - Published by Office of National Statistics
+ - Available from: https://www.ons.gov.uk/peoplepopulationandcommunity/populationandmigration/populationestimates/datasets/estimatesofthepopulationforenglandandwales
